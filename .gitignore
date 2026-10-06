@@ -1,0 +1,13 @@
+# Local secret files
+local-files/.env
+local-files/*.env
+*.env
+
+# Packer output & manifests
+packer_output.txt
+manifest.json
+*.pkrvars.hcl
+
+# OS generated files
+.DS_Store
+Thumbs.db

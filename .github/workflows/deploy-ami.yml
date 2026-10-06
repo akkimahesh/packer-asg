@@ -1,0 +1,62 @@
+name: Build AMI and Deploy to ASG
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v2
+        with:
+          version: 'latest'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Inject Local Manual Files from GitHub Secrets
+        run: |
+          mkdir -p local-files
+          echo "${{ secrets.MANUAL_ENV_FILE }}" > local-files/.env
+
+      - name: Initialize Packer
+        run: packer init template.pkr.hcl
+
+      - name: Build AMI with Packer
+        id: packer_build
+        run: |
+          packer build -var "github_token=${{ secrets.GH_PAT }}" -machine-readable template.pkr.hcl | tee packer_output.txt
+          AMI_ID=$(grep -E "amazon-ebs.ubuntu: AMIs were created:" packer_output.txt | cut -d' ' -f6 | tr -d '\r')
+          echo "AMI_ID=$AMI_ID" >> $GITHUB_ENV
+
+      - name: Create New Launch Template Version & Refresh ASG
+        run: |
+          echo "Updating Launch Template with AMI: ${{ env.AMI_ID }}"
+          
+          NEW_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-name "my-app-launch-template" \
+            --launch-template-data "{\"ImageId\":\"${{ env.AMI_ID }}\"}" \
+            --query "LaunchTemplateVersion.VersionNumber" --output text)
+
+          aws ec2 modify-launch-template \
+            --launch-template-name "my-app-launch-template" \
+            --default-version "$NEW_VERSION"
+
+          aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name "my-app-asg" \
+            --launch-template "LaunchTemplateName=my-app-launch-template,Version=\$Default"
+
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "my-app-asg"
